@@ -1,0 +1,168 @@
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs'
+
+// 前端 widget 的源码，host 端把它作为 JS 内容服务出去并注入页面。
+// 纯前端计算峰谷（本地时间，无网络往返）；host 只负责提供注入通道。
+const WIDGET_JS = `(function () {
+  if (window.__dshPeakWatch) return
+  window.__dshPeakWatch = true
+
+  // —— 峰谷规则（北京时间）：09:00-12:00、14:00-18:00 为峰；周末全天谷 ——
+  // 切换点（北京墙上时间的小时）：9,12,14,18；18 点至次日 9 点为谷（跨午夜不截断）。
+  var SWITCH_HOURS = [9, 12, 14, 18]
+
+  // 判断一个"北京时间" Date 实例是否为周末（周六/周日，按北京日历日）。
+  function isWeekendBJ(bjDate) {
+    var dow = bjDate.getUTCDay() // 0=周日 6=周六（bjDate 按 UTC 读即北京日历日）
+    return dow === 0 || dow === 6
+  }
+
+  // 返回"当前时刻"（number 毫秒时间戳）之后的下一次峰/谷切换点（绝对 UTC 时间戳），
+  // 以及当前是否峰时段。倒计时终点 = 最近的下一个切换点，跨午夜、跨周末不截断。
+  function nextSwitch(now) {
+    var bjNow = new Date(now + 8 * 3600 * 1000)
+    // 生成未来 4 天的候选切换点（足够覆盖周末 2 天 + 跨午夜余量）
+    var candidates = []
+    for (var day = 0; day < 4; day++) {
+      for (var k = 0; k < SWITCH_HOURS.length; k++) {
+        var hh = SWITCH_HOURS[k]
+        // 北京时间 hh:00 = UTC (hh-8):00，绝对时间戳 = Date.UTC(...) - 8h
+        var t = Date.UTC(bjNow.getUTCFullYear(), bjNow.getUTCMonth(), bjNow.getUTCDate() + day, hh, 0, 0) - 8 * 3600 * 1000
+        var bjT = new Date(t + 8 * 3600 * 1000)
+        // 周末全天谷：周末当天没有峰段，跳过周末日期的候选
+        if (isWeekendBJ(bjT)) continue
+        if (t > now) candidates.push(t)
+      }
+    }
+    candidates.sort(function (a, b) { return a - b })
+    var next = candidates[0]
+    // 当前是否峰：now 落在峰段即峰
+    var bj = new Date(now + 8 * 3600 * 1000)
+    var h = bj.getUTCHours()
+    var peak = !isWeekendBJ(bj) && ((h >= 9 && h < 12) || (h >= 14 && h < 18))
+    // 安全兜底（理论上必有候选）
+    if (typeof next !== 'number') next = now + 3600 * 1000
+    return { peak: peak, next: next }
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n }
+
+  // 计算当前时刻到下一次切换点的差值（毫秒）
+  function msToSegmentEnd(now) {
+    var s = nextSwitch(now)
+    var diff = s.next - now
+    if (diff < 0) diff = 0
+    return { ms: diff, peak: s.peak }
+  }
+
+  function fmtHHMM(ms) {
+    var totalSec = Math.floor(ms / 1000)
+    var hours = Math.floor(totalSec / 3600)
+    var mins = Math.floor((totalSec % 3600) / 60)
+    return pad(hours) + ':' + pad(mins)
+  }
+
+  // —— DOM 结构 ——
+  // 定位策略：锚到侧边栏设置区那一行（settingsArea）右缘，与"设置"文字同行右对齐。
+  // 折叠成 rail（宽<=80）时文字放不下，隐藏；展开态显示。
+  var css = [
+    '.dpw-root{position:fixed;z-index:9998;font-size:14px;line-height:1.2;color:rgba(148,163,184,.72);font-family:inherit;pointer-events:none;user-select:none;-webkit-user-select:none;white-space:nowrap;opacity:1;transition:opacity .4s ease}',
+    '.dpw-root.dpw-blinking{animation:dpw-blink 1s linear infinite}',
+    '@keyframes dpw-blink{0%,100%{opacity:.25}50%{opacity:.9}}'
+  ].join('\\n')
+
+  var styleEl = document.createElement('style')
+  styleEl.textContent = css
+  document.head.appendChild(styleEl)
+
+  var root = document.createElement('div')
+  root.className = 'dpw-root'
+  document.body.appendChild(root)
+
+  var lastPeak = null
+  var blinkTimer = null
+
+  function render() {
+    var now = Date.now()
+    var cur = msToSegmentEnd(now)
+    var label = cur.peak ? '梁文峰' : '梁文谷'
+    root.textContent = label + ' ' + fmtHHMM(cur.ms)
+
+    // 峰谷切换检测：切换后闪 5 秒
+    if (lastPeak !== null && lastPeak !== cur.peak) {
+      startBlink()
+    }
+    lastPeak = cur.peak
+  }
+
+  function startBlink() {
+    if (blinkTimer) { clearTimeout(blinkTimer); blinkTimer = null }
+    root.classList.add('dpw-blinking')
+    blinkTimer = setTimeout(function () {
+      blinkTimer = null
+      root.classList.remove('dpw-blinking')
+    }, 5000)
+  }
+
+  // —— 位置自适应：锚到侧边栏设置区那一行（settingsArea）右缘，与"设置"同行右对齐 ——
+  function realign() {
+    var area = document.querySelector('[class*="settingsArea"]')
+    // 用 settingsArea 自身宽度判断展开/折叠（展开约 256px，rail 折叠后极窄）。
+    // [data-slot="sidebar"] 是 0 宽占位，不能拿它判断 wide。
+    var wide = area ? area.getBoundingClientRect().width > 80 : false
+    if (area && wide) {
+      var r = area.getBoundingClientRect()
+      if (r.width > 0) {
+        // 文字右缘对齐 settingsArea 右缘（留 8px），垂直居中于该行
+        root.style.left = (r.left + r.width - 8) + 'px'
+        root.style.top = (r.top + r.height / 2) + 'px'
+        root.style.transform = 'translate(-100%, -50%)'
+        root.style.display = ''
+        return
+      }
+    }
+    // 折叠态（rail）或未找到：隐藏
+    root.style.display = 'none'
+  }
+
+  render()
+  realign()
+  window.addEventListener('resize', realign)
+  // 每 1 秒刷新（倒计时分钟级精度足够；但跨段边界要即时，用 1s 保证闪烁及时）
+  setInterval(function () { render(); realign() }, 1000)
+})()`
+
+const name = 'dsh-peak-watch'
+const inject = ['webServer']
+
+function apply(ctx) {
+  const disposers = []
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-peak/widget.js',
+    handler: (req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+      })
+      res.end(WIDGET_JS)
+    },
+  }))
+
+  disposers.push(ctx.webServer.tapIndex((html) => {
+    if (html.indexOf('/dsh-peak/widget.js') !== -1) return html
+    const tag = '<script defer src="/dsh-peak/widget.js"></script>'
+    if (html.indexOf('</body>') !== -1) return html.replace('</body>', tag + '</body>')
+    return html + tag
+  }))
+
+  ctx.effect(() => () => {
+    for (const d of disposers) {
+      try { d() } catch (err) {}
+    }
+  })
+}
+
+export { name, inject, apply }
