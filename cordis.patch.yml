@@ -1,0 +1,7 @@
+# dsh-better-manual-router —— 峰谷定价倒计时小字块挂载声明。
+# 走 host 注入模式（同 dsh-whale-widget）：注册一个 host 端插件，
+# 由它注入前端 widget JS。
+
+- insert:
+    - id: dsh-better-manual-router
+      name: dsh-better-manual-router

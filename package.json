@@ -1,0 +1,18 @@
+{
+  "name": "dsh-better-manual-router",
+  "version": "0.1.0",
+  "description": "DSH Web 侧边栏峰谷定价倒计时小字块（梁文峰/梁文谷 HH:MM，切换闪烁 5 秒）",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "UNLICENSED"
+}
