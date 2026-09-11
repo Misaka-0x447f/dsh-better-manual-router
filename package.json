@@ -1,7 +1,7 @@
 {
   "name": "dsh-better-manual-router",
-  "version": "0.1.0",
-  "description": "DSH Web 侧边栏峰谷定价倒计时小字块（梁文峰/梁文谷 HH:MM，切换闪烁 5 秒）",
+  "version": "0.2.0",
+  "description": "DSH Web 侧边栏峰谷定价小字块（跟踪 deepseek/deepseek-v4.1-flash，梁文峰/梁文谷 + HH:MM 倒计时）",
   "type": "module",
   "main": "lib/index.js",
   "files": [
